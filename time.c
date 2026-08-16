@@ -170,3 +170,14 @@ void reset_timer_irq_delay(void)
 {
 	timer_irq_delay = 0;
 }
+
+/**
+ * Returns the IRQ number used by the platform's generic timer.
+ *
+ * This function is used by the interrupt controller subsystem
+ * (libukintctlr) to identify the IRQ associated with the system's timer.
+ */
+uint32_t ukplat_time_get_irq(void)
+{
+    return IRQ_ID_ARM_GENERIC_TIMER;
+}

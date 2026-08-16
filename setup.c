@@ -45,11 +45,17 @@
 #include <uk/print.h>
 #include <uk/arch/types.h>
 #include <stdio.h>
-
 #include <raspi/setup.h>
+
+#define SECONDARY_STACK_SIZE 4096
 
 static uint64_t assembly_entry;
 static uint64_t hardware_init_done;
+
+/* Reserve one stack per secondary core (maxcores-1) */
+static char secondary_stacks[
+    (CONFIG_UKPLAT_LCPU_MAXCOUNT - 1) * SECONDARY_STACK_SIZE
+] __attribute__((aligned(CACHE_LINE_SIZE)));
 
 uint64_t _libraspiplat_get_reset_time(void)
 {
@@ -170,19 +176,54 @@ static void __libraspiplat_mem_init(void)
 
 void _libraspiplat_entry(uint64_t low0, uint64_t hi0, uint64_t low1, uint64_t hi1)
 {
+    _libraspiplat_init_console();
 	__libraspiplat_mem_init();
 
 	ukplat_irq_init();
+
+	/* register local‑INTC lines 29/30 as the SMP IPIs */
+    // Tells the generic SMP layer which lines are IPIs
+    int rc = lcpu_mp_init(RPI_HWIRQ_MB_RUN, RPI_HWIRQ_MB_WAKE, NULL);
+
+	if (rc) {
+        uk_pr_err("SMP: lcpu_mp_init failed: %d\n", rc);
+        return;
+    }
 
 	if (hi0 == hi1) {
 		assembly_entry = ((hi0 << 32)&0xFFFFFFFF00000000) | (low0&0xFFFFFFFF);
 	} else {
 		assembly_entry = ((hi1 << 32)&0xFFFFFFFF00000000) | (low1&0xFFFFFFFF);
 	}
-
-    _libraspiplat_init_console();
 	
 	hardware_init_done = get_system_timer();
+
+#ifdef CONFIG_HAVE_SMP
+	__u32 total = ukplat_lcpu_count();
+	if (total < 2) {
+		return;
+	}
+
+	__lcpuidx lcpus[] = { 1, 2, 3 };
+	unsigned int num = sizeof(lcpus) / sizeof(*lcpus);
+
+	// Build matching stacks & entries arrays
+	void *stacks[num];
+	ukplat_lcpu_entry_t entries[num];
+
+	for (unsigned i = 0; i < num; i++) {
+		stacks[i]  = &secondary_stacks[i * SECONDARY_STACK_SIZE
+										+ SECONDARY_STACK_SIZE];
+	}
+
+	rc = ukplat_lcpu_start(
+		/* lcpuidx */  lcpus,
+		/* num     */ &num,
+		/* sp[]    */  stacks,
+		/* entry[] */  NULL,
+		/* flags   */  0
+	);
+#endif /* CONFIG_HAVE_SMP */
 
 	/*
 	 * Enter Unikraft

@@ -62,6 +62,6 @@
 #define PUD_SHIFT			PAGE_SHIFT + 2*TABLE_SHIFT
 #define PMD_SHIFT			PAGE_SHIFT + TABLE_SHIFT
 
-#define PG_DIR_SIZE			(3 * PAGE_SIZE)
+#define PG_DIR_SIZE			(5 * PAGE_SIZE)
 
 #endif /* __RASPI_MM_H__ */

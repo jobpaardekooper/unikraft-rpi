@@ -111,11 +111,54 @@ SECTIONS
     }
 	__bss_end = .;
 
+	/*  Per‑core stacks (16‑byte aligned, NOLOAD) */
+
+	.stack_core0 (NOLOAD) : ALIGN(16) {
+		__stack_start_core0__ = .;
+		. += 512;   __EL0_stack_core0 = .;
+		. += 16384; __EL1_stack_core0 = .;
+		. += 512;   __EL2_stack_core0 = .;
+		__stack_end_core0__ = .;
+	}
+
+	.stack_core1 (NOLOAD) : ALIGN(16) {
+		__stack_start_core1__ = .;
+		. += 512;   __EL0_stack_core1 = .;
+		. += 1024;  __EL1_stack_core1 = .;
+		. += 512;   __EL2_stack_core1 = .;
+		__stack_end_core1__ = .;
+	}
+
+	.stack_core2 (NOLOAD) : ALIGN(16) {
+		__stack_start_core2__ = .;
+		. += 512;   __EL0_stack_core2 = .;
+		. += 1024;  __EL1_stack_core2 = .;
+		. += 512;   __EL2_stack_core2 = .;
+		__stack_end_core2__ = .;
+	}
+
+	.stack_core3 (NOLOAD) : ALIGN(16) {
+		__stack_start_core3__ = .;
+		. += 512;   __EL0_stack_core3 = .;
+		. += 1024;  __EL1_stack_core3 = .;
+		. += 512;   __EL2_stack_core3 = .;
+		__stack_end_core3__ = .;
+	}
+
+/* ------------------------------------------------------------------
+ *   Initial MMU tables
+ *   page‑0 : PGD
+ *   page‑1 : PUD covering 0x0000_0000 – 0x3FFF_FFFF
+ *   page‑2 : PMD for that PUD
+ *   page‑3 : PUD covering 0x4000_0000 – 0x7FFF_FFFF  (local‑INTC window)
+ *   page‑4 : PMD for that PUD
+ * ---------------------------------------------------------- */
+
 	. = ALIGN(__PAGE_SIZE);
 	_pagetables = .;
 	.pagetables (NOLOAD) :
 	{
-		. += 3 * __PAGE_SIZE;
+		. += 5 * __PAGE_SIZE;
 	}
 
 	_end = .;

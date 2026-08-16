@@ -37,4 +37,198 @@ config RASPI_WATERMARK_STACK
        depends on ARCH_ARM_64
 endmenu
 
+menu "Interrupt Controller Settings"
+config LIBUKINTCTLR_MAX_HANDLERS_PER_IRQ
+	int "Max number of interrupt handlers per IRQ"
+	default 1
+	help
+	  Define the number of handlers supported per IRQ line.
+endmenu
+
+menu "Driver Options"
+config LIBBCM2835_SPI
+        bool "BCM2835/7 SPI0 driver (Raspberry Pi 3)"
+        default y
+        depends on ARCH_ARM_64
+        help
+          Polled-mode driver for the BCM2835/BCM2837 SPI0 controller as
+          found on the Raspberry Pi 3 Model B.  Provides bcm2835_spi_init(),
+          bcm2835_spi_transfer(), and bcm2835_spi_set_clock().
+
+          Derived from FreeBSD sys/arm/broadcom/bcm2835/bcm2835_spi.c.
+          Uses interrupt-free polled transfers so it is safe to call during
+          early platform initialisation before the IRQ subsystem is up.
+
+config LIBBCM2835_GPIO
+        bool "BCM2835/7 GPIO driver (FreeBSD shim, Raspberry Pi 3)"
+        default n
+        depends on ARCH_ARM_64
+        help
+          GPIO driver using the unmodified FreeBSD bcm2835_gpio.c driver
+          via a minimal KOBJ shim layer.  No edits to the FreeBSD source
+          are required: bcm_gpio_probe and bcm_gpio_attach remain static;
+          the KOBJ constructor/dispatch mechanism finds them at runtime.
+
+          Exposes uk_gpio_init(), uk_gpio_set(), uk_gpio_get(),
+          uk_gpio_set_func(), and uk_gpio_set_pud() to applications.
+
+config LIBBCM2835_I2C
+        bool "BCM2835/7 I2C (BSC1) driver (FreeBSD shim, Raspberry Pi 3)"
+        default n
+        depends on ARCH_ARM_64
+        depends on LIBBCM2835_GPIO
+        help
+          I2C driver using the unmodified FreeBSD bcm2835_bsc.c driver via
+          the same KOBJ shim layer as the GPIO driver.  The FreeBSD driver
+          is used only for hardware initialisation (probe + attach resets
+          the BSC1 controller and sets the 100 kHz clock divider); actual
+          transfers use a direct-MMIO polled implementation that bypasses
+          the interrupt-driven bcm_bsc_transfer() path.
+
+          Targets BSC1 (I2C1): GPIO 2 = SDA (pin 3), GPIO 3 = SCL (pin 5).
+
+          Exposes uk_i2c_init(), uk_i2c_write(), uk_i2c_read(), and
+          uk_i2c_write_read() to applications.
+
+config LIBBCM2835_LCD
+        bool "HD44780 LCD driver via PCF8574 I2C backpack"
+        default n
+        depends on ARCH_ARM_64
+        depends on LIBBCM2835_I2C
+        help
+          Native Unikraft driver for HD44780-compatible character LCDs
+          (20x4, 16x2, ...) connected via a PCF8574 I2C I/O expander
+          backpack.  No FreeBSD shim layer is used; the driver is
+          implemented entirely on top of uk_i2c_write().
+
+          Common PCF8574 I2C addresses:
+            0x27 — PCF8574  with A2=A1=A0=1 (most common)
+            0x3F — PCF8574A with A2=A1=A0=1
+          Check the A0/A1/A2 solder jumpers on the backpack board.
+
+          Exposes uk_lcd_init(), uk_lcd_clear(), uk_lcd_set_cursor(),
+          uk_lcd_putc(), uk_lcd_print(), uk_lcd_puts_row(),
+          uk_lcd_home(), and uk_lcd_backlight().
+
+config LIBBCM2835_INA219
+        bool "INA219 current/power monitor driver"
+        default n
+        depends on ARCH_ARM_64
+        depends on LIBBCM2835_I2C
+        help
+          Native Unikraft driver for the Texas Instruments INA219 bidirectional
+          current/power monitor.  No FreeBSD shim layer is used; the driver
+          communicates directly via uk_i2c_write() and uk_i2c_write_read().
+
+          The INA219 measures bus voltage (0–32 V) and shunt voltage (±320 mV
+          at default PGA=÷8), and computes current and power via a calibration
+          register.  Default calibration targets a 0.1 Ω shunt with a current
+          LSB of 0.1 mA and a power LSB of 2 mW.
+
+          Common INA219 I2C addresses (A1/A0 pins):
+            0x40 — A1=GND, A0=GND  (most common breakout board default)
+            0x41 — A1=GND, A0=VCC
+            0x44 — A1=VCC, A0=GND
+            0x45 — A1=VCC, A0=VCC
+
+          Exposes uk_ina219_init(), uk_ina219_read_bus_mv(),
+          uk_ina219_read_shunt_uv(), uk_ina219_read_current_ma(),
+          and uk_ina219_read_power_mw().
+
+config LIBBCM2835_ENCODER
+        bool "Dual rotary encoder driver"
+        default n
+        depends on ARCH_ARM_64
+        depends on LIBBCM2835_GPIO
+        help
+          Poll-based driver for two KY-040-style rotary encoders connected
+          directly to BCM2837 GPIO pins.  No FreeBSD shim involved.
+
+          Pin assignment (fixed):
+            ENC1  A=GPIO22  B=GPIO23  SW=GPIO24  (back / cancel)
+            ENC2  A=GPIO25  B=GPIO26  SW=GPIO27  (navigate / select)
+
+          Quadrature decoding uses a 4-step grey-code lookup table;
+          one physical detent produces exactly one ±1 event.
+          Button presses are debounced (~30 ms).
+
+          Exposes uk_encoder_init(), uk_encoder_poll(), and
+          uk_encoder_button().
+
+config LIBBCM2835_UART
+        bool "BCM2837 PL011 UART0 driver (application use)"
+        default n
+        depends on ARCH_ARM_64
+        depends on LIBBCM2835_GPIO
+        help
+          Direct polled driver for the BCM2837 PL011 UART0 (GPIO 14 = TXD,
+          GPIO 15 = RXD).  Intended for application use when ALL serial
+          console options (RASPI_PRINTF/KERNEL/DEBUG_SERIAL_CONSOLE) are
+          disabled; enabling both this driver and the serial console on the
+          same UART will cause conflicts.
+
+          Sets the UART clock to 4 MHz via the VideoCore mailbox and
+          supports baud rates 9600 / 19200 / 38400 / 57600 / 115200 (8N1).
+
+          Exposes uk_uart_init(), uk_uart_putc(), uk_uart_getc(),
+          uk_uart_write(), and uk_uart_read_timeout().
+
+config LIBBCM2835_E220
+        bool "EBYTE E220-400T30D LoRa module driver"
+        default n
+        depends on ARCH_ARM_64
+        depends on LIBBCM2835_UART
+        depends on LIBBCM2835_GPIO
+        help
+          Native driver for the EBYTE E220-400T30D LoRa module connected
+          via UART0 at 9600 baud (default).  Controls the M0/M1 mode pins
+          and monitors the AUX busy indicator.
+
+          Pin assignment (fixed):
+            M0  = GPIO 17  (header pin 11) — mode select bit 0
+            M1  = GPIO 16  (header pin 36) — mode select bit 1
+            AUX = GPIO 13  (header pin 33) — busy: low=busy, high=ready
+
+          Operates in transparent (normal) mode only: data written to
+          uk_e220_send() is transmitted over the air; received packets
+          are returned by uk_e220_recv().
+
+          Exposes uk_e220_init(), uk_e220_send(), and uk_e220_recv().
+
+config LIBBCM2835_SDCARD
+        bool "BCM2837 SD card bare-metal driver (EMMC / Arasan SDHCI)"
+        default n
+        depends on ARCH_ARM_64
+        help
+          Pure bare-metal driver for the BCM2837 EMMC (Arasan SDHCI) controller
+          at 0x3F300000.  No DMA, no interrupts — polled PIO only.
+
+          Mirrors the design of bcm_bsc_shim.c: the FreeBSD bcm2835_sdhci.c /
+          sdhci.c / mmc.c / mmcsd.c files live in drivers/freebsd/ for
+          reference but the actual transfer path is direct MMIO.
+
+          Sets the EMMC clock to 50 MHz via the VideoCore mailbox and runs
+          the full SD card initialisation sequence (CMD0 → ACMD41 → CMD7).
+          Supports SDSC and SDHC/SDXC cards.
+
+          Exposes uk_sdcard_init(), uk_sdcard_read_block(), and
+          uk_sdcard_write_block().
+
+config LIBBCM2835_FATFS
+        bool "FatFs R0.15 FAT filesystem (SD card file logging)"
+        default n
+        depends on ARCH_ARM_64
+        depends on LIBBCM2835_SDCARD
+        help
+          Integrates ChaN's FatFs R0.15 FAT/FAT32 library with the
+          uk_sdcard_read_block / uk_sdcard_write_block disk I/O layer.
+
+          The ff.c and ff.h source files are downloaded by the build script
+          from the FatFs GitHub mirror; the disk I/O adapter (diskio.c) and
+          configuration (ffconf.h) live in drivers/fatfs/.
+
+          Provides the standard FatFs API: f_mount, f_open, f_close,
+          f_write, f_printf, f_lseek, f_size, etc.
+endmenu
+
 endif

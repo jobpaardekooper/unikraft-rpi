@@ -36,39 +36,44 @@
 #ifndef __RASPI_IRQ_H__
 #define __RASPI_IRQ_H__
 
+#include <uk/intctlr.h>
 #include <raspi/sysregs.h>
+#include <raspi/barriers.h>
+#include <raspi/mmio.h>
 
-typedef int (*irq_handler_func_t)(void *);
+// Platform-level IRQ IDs (the old 4 you already expose).
+#define IRQ_ID_ARM_GENERIC_TIMER             0
+#define IRQ_ID_RASPI_ARM_SIDE_TIMER          1
+#define IRQ_ID_RASPI_USB                     2
+#define IRQ_ID_RASPI_ARM_SYSTEM_TIMER_IRQ_3  3
+#define RPI_HWIRQ_MB_RUN 4
+#define RPI_HWIRQ_MB_WAKE 5
+#define IRQS_MAX                             64
 
-int ukplat_irq_register(unsigned long irq, irq_handler_func_t func, void *arg);
+// Hardware IRQ lines in the Pi’s interrupt controller
+#define RPI_HWIRQ_ARM_GENERIC_TIMER          63
+#define RPI_HWIRQ_ARM_SIDE_TIMER            64
+#define RPI_HWIRQ_RASPI_USB                  9
+#define RPI_HWIRQ_ARM_SYSTEM_TIMER_IRQ_3     3
 
-/* type definitions */
-typedef unsigned long k_sigset_t;
-typedef struct {
-	unsigned long fds_bits[128 / sizeof(long)];
-} k_fd_set;
+#ifndef MMIO_BASE
+#define MMIO_BASE  0x3F000000
+#endif
 
-/* sigaction */
-typedef void (*uk_sighandler_t)(int);
-typedef void (*uk_sigrestore_t)(void);
+#define LOCAL_INTC_BASE   0x40000000UL
+#define IRQ_SRC_BASE 0x40000060
+#define MBOX0_RDCLR_BASE 0x400000C0
 
-struct uk_sigaction {
-	uk_sighandler_t k_sa_handler;
-	int k_sa_flags;
-	uk_sigrestore_t k_sa_restorer;
-	k_sigset_t k_sa_mask;
-};
-/* IRQ handlers declarations */
-struct irq_handler {
-	/* func() special values:
-	 *   NULL: free,
-	 *   HANDLER_RESERVED: reserved
-	 */
-	irq_handler_func_t func;
-	void *arg;
+#define CORE0_MBOX_IRQCNTL   0x50
+#define CORE1_MBOX_IRQCNTL   0x54
+#define CORE2_MBOX_IRQCNTL   0x58
+#define CORE3_MBOX_IRQCNTL   0x5C
 
-	struct uk_sigaction oldaction;
-};
+#define QA7_MB0(c)  (0x40000080u + ((c) << 4))  /* mailbox-0 SET */
+#define QA7_MB1(c)  (0x40000084u + ((c) << 4))  /* mailbox-1 SET: arg low */
+#define QA7_MB2(c)  (0x40000088u + ((c) << 4))  /* mailbox-2 SET: arg high */
+
+#define INT_SRC_MBOX0   (1U << 4)    /* Mailbox 0 pending bit in COREn_IRQ_SOURCE */
 
 #define IRQ_BASIC_PENDING	((volatile __u32 *)(MMIO_BASE+0x0000B200))
 #define IRQ_PENDING_1		((volatile __u32 *)(MMIO_BASE+0x0000B204))
@@ -89,13 +94,44 @@ struct irq_handler {
 #define IRQS_1_SYSTEM_TIMER_IRQ_3	(1 << 3)
 #define IRQS_1_USB_IRQ				(1 << 9)
 
-#define IRQS_MAX							4
-#define IRQ_ID_ARM_GENERIC_TIMER			0
-#define IRQ_ID_RASPI_ARM_SIDE_TIMER			1
-#define IRQ_ID_RASPI_USB					2
-#define IRQ_ID_RASPI_ARM_SYSTEM_TIMER_IRQ_3 3
+typedef int (*irq_handler_func_t)(void *);
 
-void irq_vector_init( void );
+
+/* The platform-level functions that the rest of the code calls
+ * to register and init interrupts. 
+ */
+int ukplat_irq_register(unsigned long irq, irq_handler_func_t func, void *arg);
 int ukplat_irq_init(void);
+
+/* This function is called by the exception/IRQ vector
+ * and passes the regs and hardware line to uk_intctlr. 
+ */
+void ukplat_irq_handle(struct __regs *regs);
+
+
+
+/* Mailbox-0 “set” register for core n (n==0...3) */
+static inline uintptr_t MAILBOX0_SET(uint32_t n)
+{
+    return LOCAL_INTC_BASE + 0x80 + (n * 0x10);
+}
+
+/**
+ * send_ipi() — kick core n out of WFI by setting mailbox 0
+ * n: target core index (0–3)
+ */
+static inline void send_ipi(uint32_t n)
+{
+    uintptr_t reg = MAILBOX0_SET(n);
+
+    /* Ensure all prior memory accesses complete before we set the mailbox */
+    __asm__ volatile("dsb sy" ::: "memory");
+
+    /* Write any non-zero to bit 0 → mailbox IRQ line goes high */
+    mmio_write(reg, 1);
+
+    /* Make sure the write really hits the bus before we proceed */
+    __asm__ volatile("dsb sy" ::: "memory");
+}
 
 #endif /* __RASPI_IRQ_H__ */

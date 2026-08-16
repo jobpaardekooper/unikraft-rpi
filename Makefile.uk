@@ -22,6 +22,13 @@ LIBRASPIPLAT_ASINCLUDES-y        += -I$(UK_PLAT_COMMON_BASE)/include
 LIBRASPIPLAT_CINCLUDES-y         += -I$(LIBRASPIPLAT_BASE)/include
 LIBRASPIPLAT_CINCLUDES-y         += -I$(UK_PLAT_COMMON_BASE)/include
 LIBRASPIPLAT_CINCLUDES-y         += -I$(UK_PLAT_DRIVERS_BASE)/include
+LIBRASPIPLAT_CINCLUDES-$(CONFIG_LIBBCM2835_SPI) += -I$(LIBRASPIPLAT_BASE)/drivers/include
+
+## GPIO shim: include paths for bcm_gpio_shim.c and kobj_descriptors.c
+LIBRASPIPLAT_CINCLUDES-$(CONFIG_LIBBCM2835_GPIO) += \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/uk \
+    -I$(LIBRASPIPLAT_BASE)/include
 
 LIBRASPIPLAT_ASFLAGS             += -DRASPIPLAT -DRASPPI=$(RASPPI) -DAARCH64=$(AARCH64)
 LIBRASPIPLAT_CFLAGS              += -DRASPIPLAT -DRASPPI=$(RASPPI) -DAARCH64=$(AARCH64)
@@ -88,7 +95,171 @@ LIBRASPIPLAT_SRCS-y				+= $(LIBRASPIPLAT_BASE)/eth/lib/usbstandardhub.c
 LIBRASPIPLAT_SRCS-y				+= $(LIBRASPIPLAT_BASE)/eth/lib/timer2.c
 LIBRASPIPLAT_SRCS-y				+= $(LIBRASPIPLAT_BASE)/eth/lib/interrupt.c
 LIBRASPIPLAT_SRCS-y				+= $(LIBRASPIPLAT_BASE)/drivers/raspi_net.c
-LIBRASPIPLAT_SRCS-y				+= $(LIBRASPIPLAT_BASE)/lcpu.c
+LIBRASPIPLAT_SRCS-$(CONFIG_LIBBCM2835_SPI)      += $(LIBRASPIPLAT_BASE)/drivers/bcm2835_spi.c
+
+## GPIO shim source files
+LIBRASPIPLAT_SRCS-$(CONFIG_LIBBCM2835_GPIO) += \
+    $(LIBRASPIPLAT_BASE)/drivers/kobj_descriptors.c
+LIBRASPIPLAT_SRCS-$(CONFIG_LIBBCM2835_GPIO) += \
+    $(LIBRASPIPLAT_BASE)/drivers/bcm_gpio_shim.c
+LIBRASPIPLAT_SRCS-$(CONFIG_LIBBCM2835_GPIO) += \
+    $(LIBRASPIPLAT_BASE)/drivers/freebsd/bcm2835_gpio.c|freebsd_gpio
+
+## Per-file flags for bcm2835_gpio.c (tag = freebsd_gpio).
+## Unikraft vprefix_src expands to: LIBRASPIPLAT_BCM2835_GPIO_FREEBSD_GPIO_INCLUDES
+## and LIBRASPIPLAT_BCM2835_GPIO_FREEBSD_GPIO_FLAGS
+LIBRASPIPLAT_BCM2835_GPIO_FREEBSD_GPIO_INCLUDES := \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/freebsd \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/freebsd/sys \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/freebsd/dev \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/freebsd/machine \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include \
+    -I$(LIBRASPIPLAT_BASE)/drivers/freebsd \
+    -I$(LIBRASPIPLAT_BASE)/include
+
+LIBRASPIPLAT_BCM2835_GPIO_FREEBSD_GPIO_FLAGS := \
+    -Wno-unused-parameter \
+    -Wno-missing-prototypes \
+    -Wno-implicit-function-declaration \
+    -Wno-strict-prototypes \
+    -fno-builtin-printf \
+    -DFREEBSD_SHIM_LAYER=1
+
+## I2C / BSC shim: include paths for bcm_bsc_shim.c and bsc_kobj_descriptors.c
+LIBRASPIPLAT_CINCLUDES-$(CONFIG_LIBBCM2835_I2C) += \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/uk \
+    -I$(LIBRASPIPLAT_BASE)/include
+
+## I2C / BSC shim source files
+LIBRASPIPLAT_SRCS-$(CONFIG_LIBBCM2835_I2C) += \
+    $(LIBRASPIPLAT_BASE)/drivers/bsc_kobj_descriptors.c
+LIBRASPIPLAT_SRCS-$(CONFIG_LIBBCM2835_I2C) += \
+    $(LIBRASPIPLAT_BASE)/drivers/bcm_bsc_shim.c
+LIBRASPIPLAT_SRCS-$(CONFIG_LIBBCM2835_I2C) += \
+    $(LIBRASPIPLAT_BASE)/drivers/freebsd/bcm2835_bsc.c|freebsd_bsc
+
+## Per-file flags for bcm2835_bsc.c (tag = freebsd_bsc).
+## Unikraft vprefix_src key = LIBRASPIPLAT_<UPPERCASE_BASENAME>_<UPPERCASE_TAG>
+## basename of bcm2835_bsc.c → BCM2835_BSC; tag freebsd_bsc → FREEBSD_BSC
+LIBRASPIPLAT_BCM2835_BSC_FREEBSD_BSC_INCLUDES := \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/freebsd \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/freebsd/sys \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/freebsd/dev \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/freebsd/machine \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/freebsd/arm/broadcom/bcm2835 \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include \
+    -I$(LIBRASPIPLAT_BASE)/drivers/freebsd \
+    -I$(LIBRASPIPLAT_BASE)/include
+
+LIBRASPIPLAT_BCM2835_BSC_FREEBSD_BSC_FLAGS := \
+    -Wno-unused-parameter \
+    -Wno-missing-prototypes \
+    -Wno-implicit-function-declaration \
+    -Wno-strict-prototypes \
+    -fno-builtin-printf \
+    -DFREEBSD_SHIM_LAYER=1
+
+## HD44780 LCD driver (native — no FreeBSD isolated include path needed)
+## Sits on top of uk_i2c_write(); LIBBCM2835_I2C is a Kconfig dependency.
+LIBRASPIPLAT_CINCLUDES-$(CONFIG_LIBBCM2835_LCD) += \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/uk
+
+LIBRASPIPLAT_SRCS-$(CONFIG_LIBBCM2835_LCD) += \
+    $(LIBRASPIPLAT_BASE)/drivers/bcm_hd44780.c
+
+## INA219 current/power monitor driver (native — no FreeBSD isolated include path needed)
+## Sits on top of uk_i2c_write_read(); LIBBCM2835_I2C is a Kconfig dependency.
+LIBRASPIPLAT_CINCLUDES-$(CONFIG_LIBBCM2835_INA219) += \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/uk
+
+LIBRASPIPLAT_SRCS-$(CONFIG_LIBBCM2835_INA219) += \
+    $(LIBRASPIPLAT_BASE)/drivers/bcm_ina219.c
+
+## Dual rotary encoder driver (native — GPIO only, no FreeBSD shim needed)
+LIBRASPIPLAT_CINCLUDES-$(CONFIG_LIBBCM2835_ENCODER) += \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/uk
+
+LIBRASPIPLAT_SRCS-$(CONFIG_LIBBCM2835_ENCODER) += \
+    $(LIBRASPIPLAT_BASE)/drivers/bcm_encoder.c
+
+## PL011 UART0 driver (application use — requires serial console disabled)
+LIBRASPIPLAT_CINCLUDES-$(CONFIG_LIBBCM2835_UART) += \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/uk \
+    -I$(LIBRASPIPLAT_BASE)/include
+
+LIBRASPIPLAT_SRCS-$(CONFIG_LIBBCM2835_UART) += \
+    $(LIBRASPIPLAT_BASE)/drivers/bcm_uart.c
+
+## EBYTE E220-400T30D LoRa module driver
+LIBRASPIPLAT_CINCLUDES-$(CONFIG_LIBBCM2835_E220) += \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/uk
+
+LIBRASPIPLAT_SRCS-$(CONFIG_LIBBCM2835_E220) += \
+    $(LIBRASPIPLAT_BASE)/drivers/bcm_e220.c
+
+## BCM2837 SD card — SDHCI shim (FreeBSD bcm2835_sdhci.c + polled protocol)
+
+## Include paths for shim-side files (bcm_sdhci_shim.c, sdhci_kobj_descriptors.c)
+LIBRASPIPLAT_CINCLUDES-$(CONFIG_LIBBCM2835_SDCARD) += \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/uk \
+    -I$(LIBRASPIPLAT_BASE)/include
+
+## Shim-side source files (compiled with normal Unikraft include path)
+LIBRASPIPLAT_SRCS-$(CONFIG_LIBBCM2835_SDCARD) += \
+    $(LIBRASPIPLAT_BASE)/drivers/bus_stubs.c
+LIBRASPIPLAT_SRCS-$(CONFIG_LIBBCM2835_SDCARD) += \
+    $(LIBRASPIPLAT_BASE)/drivers/sdhci_kobj_descriptors.c
+LIBRASPIPLAT_SRCS-$(CONFIG_LIBBCM2835_SDCARD) += \
+    $(LIBRASPIPLAT_BASE)/drivers/bcm_sdhci_shim.c
+
+## FreeBSD-side source file (compiled with isolated FreeBSD include path)
+LIBRASPIPLAT_SRCS-$(CONFIG_LIBBCM2835_SDCARD) += \
+    $(LIBRASPIPLAT_BASE)/drivers/freebsd/bcm2835_sdhci.c|freebsd_sdhci
+
+## Per-file includes and flags for bcm2835_sdhci.c (tag = freebsd_sdhci).
+## Unikraft vprefix_src key: LIBRASPIPLAT_BCM2835_SDHCI_FREEBSD_SDHCI_*
+LIBRASPIPLAT_BCM2835_SDHCI_FREEBSD_SDHCI_INCLUDES := \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/freebsd \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/freebsd/sys \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/freebsd/dev \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/freebsd/dev/sdhci \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/freebsd/dev/mmc \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/freebsd/machine \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/freebsd/arm/broadcom/bcm2835 \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include \
+    -I$(LIBRASPIPLAT_BASE)/drivers/freebsd \
+    -I$(LIBRASPIPLAT_BASE)/include
+
+LIBRASPIPLAT_BCM2835_SDHCI_FREEBSD_SDHCI_FLAGS := \
+    -Wno-unused-parameter \
+    -Wno-missing-prototypes \
+    -Wno-implicit-function-declaration \
+    -Wno-strict-prototypes \
+    -Wno-unused-variable \
+    -fno-builtin-printf \
+    -DFREEBSD_SHIM_LAYER=1 \
+    -DFREEBSD_SHIM_SDHCI=1
+
+## FatFs R0.15 + disk I/O adapter
+## ff.c and ff.h are placed in drivers/fatfs/ by the build script.
+LIBRASPIPLAT_CINCLUDES-$(CONFIG_LIBBCM2835_FATFS) += \
+    -I$(LIBRASPIPLAT_BASE)/drivers/fatfs \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include \
+    -I$(LIBRASPIPLAT_BASE)/drivers/include/uk
+
+LIBRASPIPLAT_SRCS-$(CONFIG_LIBBCM2835_FATFS) += \
+    $(LIBRASPIPLAT_BASE)/drivers/fatfs/ff.c
+LIBRASPIPLAT_SRCS-$(CONFIG_LIBBCM2835_FATFS) += \
+    $(LIBRASPIPLAT_BASE)/drivers/fatfs/diskio.c
+
+LIBRASPIPLAT_SRCS-y				+= $(LIBRASPIPLAT_BASE)/lcpu_arch_rpi.c
 ifeq ($(findstring y,$(CONFIG_RASPI_LCD) $(CONFIG_RASPI_LCD)),y)
 LIBRASPIPLAT_SRCS-y				+= $(LIBRASPIPLAT_BASE)/lfb.c
 endif

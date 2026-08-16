@@ -33,161 +33,190 @@
  * THIS HEADER MAY NOT BE EXTRACTED OR MODIFIED IN ANY WAY.
  */
 
-#include <stdlib.h>
-#include <uk/plat/common/irq.h>
 #include <uk/print.h>
 #include <uk/essentials.h>
+#include <uk/intctlr.h>
+#include <uk/plat/lcpu.h>
 #include <raspi/irq.h>
 #include <raspi/time.h>
 #include <raspi/raspi_info.h>
 #include <arm/time.h>
-#include <uspi/types.h>
+#include <raspi/barriers.h>
+#include <uspienv/interrupt.h>
 
-#define InvalidateInstructionCache()	\
-				__asm volatile ("ic iallu" ::: "memory")
-#define FlushBranchTargetCache()	\
-				__asm volatile ("dsb ish; tlbi vmalle1is; dsb ish; isb" ::: "memory")
 
-#define InstructionSyncBarrier() __asm volatile ("isb sy" ::: "memory")
-#define DataSyncBarrier()	__asm volatile ("dsb sy" ::: "memory")
-#define DataMemBarrier() 	__asm volatile ("dmb sy" ::: "memory")
+static int rpi_configure_irq(struct uk_intctlr_irq *irq)
+{
+	/* No extra config needed for the Pi’s intc. */
+	return 0;
+}
 
-#define ARM_IO_BASE		0x3F000000
+static int rpi_fdt_xlat(const void *fdt, int nodeoffset,
+						__u32 index, struct uk_intctlr_irq *irq)
+{
+	return -ENOTSUP; /* Not using FDT for this driver. */
+}
 
-#define ARM_IRQS_PER_REG	32
+static void rpi_mask_irq(unsigned int hwirq)
+{
+	if (hwirq == RPI_HWIRQ_ARM_SYSTEM_TIMER_IRQ_3) {
+		*DISABLE_IRQS_1 = IRQS_1_SYSTEM_TIMER_IRQ_3;
+	} else if (hwirq == RPI_HWIRQ_RASPI_USB) {
+		*DISABLE_IRQS_1 = IRQS_1_USB_IRQ;
+	} else if (hwirq == RPI_HWIRQ_ARM_SIDE_TIMER) {
+		*DISABLE_BASIC_IRQS = IRQS_BASIC_ARM_TIMER_IRQ;
+	} else if (hwirq == RPI_HWIRQ_ARM_GENERIC_TIMER) {
+		uint64_t ctl = get_el0(cntv_ctl);
+		ctl &= ~GT_TIMER_ENABLE; /* disable timer entirely */
+		set_el0(cntv_ctl, ctl);
+	}
+}
 
-#define ARM_IRQ1_BASE		0
-#define ARM_IRQ2_BASE		(ARM_IRQ1_BASE + ARM_IRQS_PER_REG)
-#define ARM_IRQBASIC_BASE	(ARM_IRQ2_BASE + ARM_IRQS_PER_REG)
+static void rpi_unmask_irq(unsigned int hwirq)
+{
+	if (hwirq == RPI_HWIRQ_ARM_SYSTEM_TIMER_IRQ_3) {
+		*ENABLE_IRQS_1 = IRQS_1_SYSTEM_TIMER_IRQ_3;
+	} else if (hwirq == RPI_HWIRQ_RASPI_USB) {
+		*ENABLE_IRQS_1 = IRQS_1_USB_IRQ;
+	} else if (hwirq == RPI_HWIRQ_ARM_SIDE_TIMER) {
+		*ENABLE_BASIC_IRQS = IRQS_BASIC_ARM_TIMER_IRQ;
+		/* Clear + enable side-timer. */
+		raspi_arm_side_timer_irq_clear();
+		raspi_arm_side_timer_irq_enable();
+	} else if (hwirq == RPI_HWIRQ_ARM_GENERIC_TIMER) {
+		/* Re-enable the ARM generic timer */
+		uint64_t ctl = get_el0(cntv_ctl);
+		ctl |= GT_TIMER_ENABLE;
+		set_el0(cntv_ctl, ctl);
+	}
+}
 
-#define ARM_IC_BASE		(ARM_IO_BASE + 0xB000)
+static struct uk_intctlr_driver_ops rpi_intctlr_ops = {
+	.configure_irq = rpi_configure_irq,
+	.fdt_xlat      = rpi_fdt_xlat,
+	.mask_irq      = rpi_mask_irq,
+	.unmask_irq    = rpi_unmask_irq,
+};
 
-#define ARM_IC_IRQ_BASIC_PENDING  (ARM_IC_BASE + 0x200)
-#define ARM_IC_IRQ_PENDING_1	  (ARM_IC_BASE + 0x204)
-#define ARM_IC_IRQ_PENDING_2	  (ARM_IC_BASE + 0x208)
-#define ARM_IC_FIQ_CONTROL	  (ARM_IC_BASE + 0x20C)
-#define ARM_IC_ENABLE_IRQS_1	  (ARM_IC_BASE + 0x210)
-#define ARM_IC_ENABLE_IRQS_2	  (ARM_IC_BASE + 0x214)
-#define ARM_IC_ENABLE_BASIC_IRQS  (ARM_IC_BASE + 0x218)
-#define ARM_IC_DISABLE_IRQS_1	  (ARM_IC_BASE + 0x21C)
-#define ARM_IC_DISABLE_IRQS_2	  (ARM_IC_BASE + 0x220)
-#define ARM_IC_DISABLE_BASIC_IRQS (ARM_IC_BASE + 0x224)
+/* The global descriptor for Pi intc driver */
+static struct uk_intctlr_desc rpi_intctlr_desc = {
+	.name = "rpi-intc",
+	.ops  = &rpi_intctlr_ops,
+};
 
-#define IRQ_LINES		(ARM_IRQS_PER_REG * 2 + 8)
-
-#define ARM_IC_IRQ_PENDING(irq)	(  (irq) < ARM_IRQ2_BASE	\
-				 ? ARM_IC_IRQ_PENDING_1		\
-				 : ((irq) < ARM_IRQBASIC_BASE	\
-				   ? ARM_IC_IRQ_PENDING_2	\
-				   : ARM_IC_IRQ_BASIC_PENDING))
-#define ARM_IC_IRQS_ENABLE(irq)	(  (irq) < ARM_IRQ2_BASE	\
-				 ? ARM_IC_ENABLE_IRQS_1		\
-				 : ((irq) < ARM_IRQBASIC_BASE	\
-				   ? ARM_IC_ENABLE_IRQS_2	\
-				   : ARM_IC_ENABLE_BASIC_IRQS))
-#define ARM_IC_IRQS_DISABLE(irq) (  (irq) < ARM_IRQ2_BASE	\
-				 ? ARM_IC_DISABLE_IRQS_1	\
-				 : ((irq) < ARM_IRQBASIC_BASE	\
-				   ? ARM_IC_DISABLE_IRQS_2	\
-				   : ARM_IC_DISABLE_BASIC_IRQS))
-#define ARM_IRQ_MASK(irq)	(1 << ((irq) & (ARM_IRQS_PER_REG-1)))
-
-struct irq_handler irq_handlers[IRQS_MAX];
+int uk_intctlr_probe(void)
+{
+	return uk_intctlr_register(&rpi_intctlr_desc);
+}
 
 int ukplat_irq_register(unsigned long irq, irq_handler_func_t func, void *arg)
 {
+	if (!func) {
+		uk_pr_err("ukplat_irq_register: invalid handler\n");
+		return -1;
+	}
+
+	/* Translate from "platform IRQ" to actual hardware line: */
+	unsigned int hwirq = 0;
 	switch (irq) {
 		case IRQ_ID_ARM_GENERIC_TIMER:
+			hwirq = RPI_HWIRQ_ARM_GENERIC_TIMER;
 			break;
 		case IRQ_ID_RASPI_ARM_SIDE_TIMER:
-			*ENABLE_BASIC_IRQS = *ENABLE_BASIC_IRQS | IRQS_BASIC_ARM_TIMER_IRQ;
-			raspi_arm_side_timer_irq_clear();
-			raspi_arm_side_timer_irq_enable();
+			hwirq = RPI_HWIRQ_ARM_SIDE_TIMER;
 			break;
 		case IRQ_ID_RASPI_USB:
+			hwirq = RPI_HWIRQ_RASPI_USB;
 			break;
 		case IRQ_ID_RASPI_ARM_SYSTEM_TIMER_IRQ_3:
+			hwirq = RPI_HWIRQ_ARM_SYSTEM_TIMER_IRQ_3;
 			break;
 		default:
-			// Unsupported IRQ
-			uk_pr_crit("ukplat_irq_register: Unsupported IRQ\n");
+			uk_pr_crit("ukplat_irq_register: unsupported IRQ %lu\n", irq);
 			return -1;
 	}
 
-	irq_handlers[irq].func = func;
-	irq_handlers[irq].arg = arg;
-	return 0;
+	/*
+	* Use the uk_intctlr library to register:
+	* The hardware line number
+	* The function pointer and arg
+	*/
+	return uk_intctlr_irq_register(hwirq, func, arg);
 }
 
 int ukplat_irq_init(void)
 {
-	DataSyncBarrier ();
+	/* Possibly flush caches, etc. */
+	DataSyncBarrier();
+	InvalidateInstructionCache();
+	FlushBranchTargetCache();
+	DataSyncBarrier();
+	InstructionSyncBarrier();
+	DataMemBarrier();
 
-	InvalidateInstructionCache ();
-	FlushBranchTargetCache ();
-	DataSyncBarrier ();
-
-	InstructionSyncBarrier ();
-
-	DataMemBarrier ();
-
-	for (unsigned int i = 0; i < IRQS_MAX; i++) {
-		irq_handlers[i].func = NULL;
-		irq_handlers[i].arg = NULL;
-	}
+	/* Clear + disable all lines first: */
 	*DISABLE_BASIC_IRQS = 0xFFFFFFFF;
-	*DISABLE_IRQS_1 = 0xFFFFFFFF;
-	*DISABLE_IRQS_2 = 0xFFFFFFFF;
+	*DISABLE_IRQS_1     = 0xFFFFFFFF;
+	*DISABLE_IRQS_2     = 0xFFFFFFFF;
+
+	uk_intctlr_probe();
+	uk_intctlr_init(NULL);
+
+	/* 3) Re-enable CPU-level interrupts */
 	ukplat_lcpu_enable_irq();
+
 	return 0;
 }
 
-void show_invalid_entry_message(int type)
+/*
+* The main interrupt dispatcher.  Called from exception vector code.
+* Instead of calling each handler array manually, the central library
+* function uk_intctlr_irq_handle(regs, <line>) is called.
+*/
+void ukplat_irq_handle(struct __regs *regs)
 {
-	uk_pr_crit("IRQ: %d\n", type);
-}
+	// Local per-core mailbox IPI (RPI_HWIRQ_MB_RUN)
+	uint32_t core = lcpu_arch_idx();
 
-void show_invalid_entry_message_el1_sync(uint64_t esr_el, uint64_t far_el)
-{
-	uk_pr_crit("ESR_EL1: %lx, FAR_EL1: %lx, SCTLR_EL1:%lx, ELR_EL1:%lx\n", esr_el, far_el, get_sctlr_el1(), get_elr_el1());
-}
+	/* Read the per-core IRQ source register */
+	uint32_t src = mmio_read(IRQ_SRC_BASE + core*4);
 
-#define USB_IRQ_N 9
-#define SYSTEM_TIMER_IRQ_3 3
-#define IRQ_LINES		(32 * 2 + 8)
+	/* INT_SRC_MBOX0 is bit-4 (0x10) in that src reg */
+	if (src & INT_SRC_MBOX0) {
+		/* clear the mailbox bit by writing ‘1’ to the RDCLR reg */
+		mmio_write(MBOX0_RDCLR_BASE + core*0x10, 1);
 
-void ukplat_irq_handle(void)
-{
-	// Check if we got irqs that we are using from the uspi code
-	for (unsigned nIRQ = 0; nIRQ < IRQ_LINES; nIRQ++)
-	{
-		if (nIRQ != SYSTEM_TIMER_IRQ_3 && nIRQ != USB_IRQ_N) {
-			continue;
-		}
-		u32 nPendReg = ARM_IC_IRQ_PENDING (nIRQ);
-		u32 nIRQMask = ARM_IRQ_MASK (nIRQ);
-		
-		if (read32 (nPendReg) & nIRQMask)
-		{
-			if (nIRQ == USB_IRQ_N && irq_handlers[IRQ_ID_RASPI_USB].func) {
-				irq_handlers[IRQ_ID_RASPI_USB].func(irq_handlers[IRQ_ID_RASPI_USB].arg);
-				return;
-			}
-			else if (nIRQ == SYSTEM_TIMER_IRQ_3 && irq_handlers[IRQ_ID_RASPI_ARM_SYSTEM_TIMER_IRQ_3].func) {
-				irq_handlers[IRQ_ID_RASPI_ARM_SYSTEM_TIMER_IRQ_3].func(irq_handlers[IRQ_ID_RASPI_ARM_SYSTEM_TIMER_IRQ_3].arg);
-				return;
-			}
-		}
-	}
-
-	__u32 irq_bits = *IRQ_BASIC_PENDING & *ENABLE_BASIC_IRQS;
-	if ((irq_bits & IRQS_BASIC_ARM_TIMER_IRQ) && irq_handlers[IRQ_ID_RASPI_ARM_SIDE_TIMER].func) {
-		irq_handlers[IRQ_ID_RASPI_ARM_SIDE_TIMER].func(NULL);
+		/* Dispatch to the “mailbox run” IRQ line */
+		uk_intctlr_irq_handle(regs, RPI_HWIRQ_MB_RUN);
 		return;
 	}
 
-	if ((get_el0(cntv_ctl) & GT_TIMER_IRQ_STATUS) && irq_handlers[IRQ_ID_ARM_GENERIC_TIMER].func) {
-		irq_handlers[IRQ_ID_ARM_GENERIC_TIMER].func(NULL);
+	// Check “normal” lines 0..63 in the Pi’s intc.
+	for (unsigned nIRQ = 0; nIRQ < IRQS_MAX; nIRQ++) {
+		// Determine which "pending" register to read
+		volatile uint32_t *pend_reg = (nIRQ < 32) ? IRQ_PENDING_1 : IRQ_PENDING_2;
+
+		// Build the bitmask for our 'nIRQ' in that register
+		uint32_t irq_mask = 1U << (nIRQ & 31);
+
+		// Check if that bit is set
+		if (*pend_reg & irq_mask) {
+			// Found a pending interrupt => forward to library.
+			uk_intctlr_irq_handle(regs, nIRQ);
+			return;
+		}
+	}
+
+	// Check the "basic" bit for the side timer
+	__u32 irq_bits = *IRQ_BASIC_PENDING & *ENABLE_BASIC_IRQS;
+	if (irq_bits & IRQS_BASIC_ARM_TIMER_IRQ) {
+		uk_intctlr_irq_handle(regs, RPI_HWIRQ_ARM_SIDE_TIMER);
+		return;
+	}
+
+	// Check the generic timer bit in CNTV_CTL
+	if (get_el0(cntv_ctl) & GT_TIMER_IRQ_STATUS) {
+		uk_intctlr_irq_handle(regs, RPI_HWIRQ_ARM_GENERIC_TIMER);
 		return;
 	}
 
@@ -202,10 +231,18 @@ void ukplat_irq_handle(void)
 	uk_pr_crit("DISABLE_IRQS_1: %u\n", *DISABLE_IRQS_1);
 	uk_pr_crit("DISABLE_IRQS_2: %u\n", *DISABLE_IRQS_2);
 	uk_pr_crit("get_el0(cntv_ctl): %lu\n", get_el0(cntv_ctl));
-	uk_pr_crit("irq_handlers[IRQ_ID_ARM_GENERIC_TIMER]: %lu\n", (unsigned long)irq_handlers[IRQ_ID_ARM_GENERIC_TIMER].func);
-	uk_pr_crit("irq_handlers[IRQ_ID_RASPI_ARM_SIDE_TIMER]: %lu\n", (unsigned long)irq_handlers[IRQ_ID_RASPI_ARM_SIDE_TIMER].func);
-	uk_pr_crit("irq_handlers[IRQ_ID_RASPI_USB]: %lu\n", (unsigned long)irq_handlers[IRQ_ID_RASPI_USB].func);
-	while(1);
+
+	while (1);
+} 
+
+void show_invalid_entry_message(int type)
+{
+	uk_pr_crit("IRQ: %d\n", type);
+}
+
+void show_invalid_entry_message_el1_sync(uint64_t esr_el, uint64_t far_el)
+{
+	uk_pr_crit("ESR_EL1: %lx, FAR_EL1: %lx, SCTLR_EL1:%lx, ELR_EL1:%lx\n", esr_el, far_el, get_sctlr_el1(), get_elr_el1());
 }
 
 void ukplat_lcpu_halt_irq(void)
